@@ -1,0 +1,5 @@
+streamlit
+duckdb
+pandas
+pyarrow
+google-genai
