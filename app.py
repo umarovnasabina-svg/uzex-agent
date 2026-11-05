@@ -682,15 +682,79 @@ def render_examples(prefix):
                 st.button(ex, key=f"{prefix}_{lg}_{i}", on_click=set_pending, args=(ex,))
 
 
-# ---------------- Интерфейс ----------------
+# ---------------- Оформление (светлая и тёмная темы) ----------------
+# Цвета заданы полупрозрачными, поэтому одинаково хорошо смотрятся в Light и Dark.
 st.markdown(
     """<style>
+/* Фон: тёплое свечение поверх цвета выбранной темы */
+.stApp{
+  background-image:
+    radial-gradient(900px 520px at 6% -6%, rgba(255,122,24,.30), transparent 62%),
+    radial-gradient(760px 520px at 100% 18%, rgba(200,95,20,.22), transparent 62%),
+    radial-gradient(900px 560px at 45% 112%, rgba(120,58,14,.28), transparent 62%);
+  background-attachment: fixed;
+}
+header[data-testid="stHeader"]{background:transparent;}
+/* Скрыть Fork / GitHub / Deploy (меню темы остаётся) */
+[data-testid="stToolbarActions"],[data-testid="stAppDeployButton"],.stDeployButton{display:none !important;}
+footer{visibility:hidden;}
+
 .block-container{max-width:1100px;padding-top:2rem;}
-div[data-testid="stMetric"]{background:rgba(120,120,160,.08);border-radius:12px;padding:10px 14px;}
+
+/* Заголовок */
+h1{
+  background:linear-gradient(90deg,#ff7a18,#ffb066);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent;
+  font-weight:800;letter-spacing:-0.5px;
+}
+
+/* Боковая панель */
+section[data-testid="stSidebar"]{
+  background:rgba(255,122,24,.07) !important;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-right:1px solid rgba(255,122,24,.20);
+}
+
+/* «Стеклянные» карточки */
+div[data-testid="stMetric"],
+div[data-testid="stChatMessage"],
+div[data-testid="stExpander"],
+div[data-testid="stAlert"]{
+  background:rgba(255,140,40,.07) !important;
+  border:1px solid rgba(255,140,40,.24) !important;
+  border-radius:16px !important;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+}
+div[data-testid="stMetric"]{padding:14px 18px;}
+div[data-testid="stChatMessage"]{padding:14px 18px;margin-bottom:10px;}
+div[data-testid="stExpander"] details{border:none;}
+
+/* Кнопки (примеры, CSV, оценки) */
+.stButton > button, .stDownloadButton > button{
+  background:rgba(255,140,40,.08);
+  border:1px solid rgba(255,140,40,.32);
+  border-radius:12px;
+  transition:background .15s, border-color .15s;
+}
+.stButton > button:hover, .stDownloadButton > button:hover{
+  background:rgba(255,122,24,.20);
+  border-color:#ff7a18;
+}
+
+/* Поле ввода */
+div[data-testid="stChatInput"]{
+  border:1px solid rgba(255,122,24,.40);
+  border-radius:18px;
+  background:rgba(255,140,40,.07);
+}
+div[data-testid="stBottom"] > div{background:transparent;}
+div[data-testid="stBottomBlockContainer"]{background:transparent;}
 </style>""",
     unsafe_allow_html=True,
 )
 
+# ---------------- Интерфейс ----------------
 con = init_db()
 tables = con.execute("SHOW TABLES").fetchall()
 if not tables:
