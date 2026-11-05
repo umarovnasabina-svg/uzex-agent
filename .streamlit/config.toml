@@ -1,9 +1,15 @@
-[client]
-toolbarMode = "minimal"
- 
 [theme]
 primaryColor = "#ff7a18"
- 
+
+[theme.light]
+backgroundColor = "#fff6ee"
+secondaryBackgroundColor = "#ffe6d0"
+textColor = "#2b1608"
+
+[theme.dark]
+backgroundColor = "#0a0604"
+secondaryBackgroundColor = "#1c0f07"
+textColor = "#fff1e6"
+
 [server]
 enableXsrfProtection = true
- 
