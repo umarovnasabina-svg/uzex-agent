@@ -3,6 +3,7 @@ import json
 import numbers
 import os
 import re
+import threading
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -112,27 +113,51 @@ EXAMPLES = {
     ],
 }
 
+# Колонки в deals английские, а README описывает их русскими названиями.
+DEALS_NOTES = (
+    "ВАЖНО: в таблице deals колонки английские. Соответствие названиям из README: "
+    "Номер сделки = deal_id; Дата сделки = deal_date; Время сделки = deal_time; Тип торгов = trade_type; "
+    "Количество (лотов) = quantity; Сумма сделки в валюте контракта = deal_amount (НЕ использовать, "
+    "суммы только из amount_uzs и amount_usd); Стартовая цена = start_price; Номер контракта = contract_id; "
+    "Наименование товара = product_name (с атрибутами одной строкой: product_full_name); Лот = lot; "
+    "Единица измерения = unit; Регион = region_ru (по-русски) и region_uz (латиницей); "
+    "Тип контракта = contract_type; Форма контракта = contract_form; Состояние сделки = status; "
+    "ИНН продавца и покупателя = seller_inn и buyer_inn; Брокер продавца и покупателя = "
+    "seller_broker_name и buyer_broker_name; Дата оплаты = payment_date; Дата поставки = delivery_date; "
+    "Поставлено лотов = delivered_lots; объём в единицах измерения = volume (= quantity * lot); "
+    "фактически поставленный объём = delivered_volume. Таблицы contracts, participants, brokers, usd_rates "
+    "модели недоступны: всё нужное уже есть в deals.\n\n"
+)
+
+PRODUCT_RULES_NEW = """15. ТОВАРЫ: в deals есть колонка product_norm, единое название товара (один товар = одно значение; список значений есть в схеме). Для фильтров, группировок, топов и рейтингов по товару используй ТОЛЬКО product_norm. Если запрошенный товар однозначно совпадает со значением из списка схемы, используй равенство product_norm = '...'; иначе product_norm ILIKE '%слово%' (слово в начальной форме: «хлопка» → «хлопок»). Не добавляй своих синонимов и переводов, кроме словаря UZ ниже. В рейтингах возвращай product_norm и метрику. Спот, форвард и фьючерс различаются колонкой contract_form: product_norm «хлопок сырец» включает все три формы; если в вопросе есть «спот», «форвард» или «фьючерс», добавь фильтр по contract_form. В filters_note кратко укажи, по какому товару искали.
+16. СОРТ И КЛАСС записаны по-разному, поэтому ищи по всем вариантам, без учёта регистра: LOWER(grade) IN (...). 1 сорт: '1 сорт','1-сорт','1-сорта','i сорт','первый сорт'. 2 сорт: '2 сорт','2-сорта','ii сорт','второй сорт'. 3 сорт: '3 сорт','3-сорта','третий сорт'. Высший сорт: 'высший сорт','высшего сорта','в/с'. 1 класс: '1 класс','1-класс','i класс'. 2 класс: '2 класс','2-класс','ii класс'. 3 класс: '3 класс','3-класс','iii класс'. 4 класс: '4 класс','4-класс','iv класс'. Для product_class так же (у арматуры отдельное значение 'а500с'). У части сделок сорт или класс указан только в product_name (например «... ПЕРВЫЙ СОРТ II КЛАСС»), а колонка пуста, поэтому для хлопка добавляй и условие по product_name; у большинства сделок сорта нет вообще, скажи об этом в filters_note.
+"""
+
+PRODUCT_RULES_OLD = """15. ПОИСК ПО НАЗВАНИЮ: ищи только слова из вопроса (в начальной форме: «хлопка» → «хлопок»). Не добавляй свои синонимы, переводы и транслитерации (например «пахта»), если их нет в данных. В данных один товар записан по-разному (регистр, дефис или пробел, суффиксы сорта и класса), поэтому ищи так: REPLACE(LOWER(product_name), '-', ' ') ILIKE '%слово или фраза%', где фразу из вопроса тоже приведи к нижнему регистру и замени дефис на пробел. Поиск по подстроке не захватывает однокоренные, но другие товары (масло хлопковое, шрот, пряжа не содержат «хлопок»). В filters_note кратко укажи, по какому слову искали.
+16. РЕЙТИНГИ И СУММЫ ПО ТОВАРАМ: один и тот же товар записан в данных по-разному (регистр, дефис или пробел, сорт и класс внутри названия), поэтому для топов, рейтингов и группировок по товару группируй по нормализованному названию:
+TRIM(regexp_replace(REPLACE(LOWER(product_name), '-', ' '), '[[:space:]]+([0-9]+|[ivx]+|первый|второй|третий|высший)[[:space:]]*(сорт|класс).*$', '')) AS product_norm
+Возвращай product_norm, нужную метрику и COUNT(DISTINCT product_name) AS name_variants; сортируй и группируй по product_norm. В filters_note напиши, что названия товаров объединены (регистр, дефис, сорт и класс). Эту формулу копируй дословно, не меняя регулярное выражение, и не используй обратные косые черты.
+"""
+
 SQL_RULES = """Ты переводишь вопрос о биржевых сделках (на русском или узбекском, латиница или кириллица) в один SQL-запрос DuckDB.
 Правила:
-1. Разрешён только один SELECT (можно с WITH). Никаких изменений данных.
-2. Используй только таблицы и поля из схемы ниже. Не выдумывай поля, значения и справочные данные.
+1. Разрешён только один SELECT (можно с WITH). Никаких изменений данных, обращений к файлам и комментариев в SQL.
+2. Используй только таблицу deals и поля из схемы ниже. Не выдумывай поля, значения и справочные данные.
 3. Все подсчёты (сумма, количество, среднее, доля, разница) делай в SQL. Деньги считай ТОЧНО: сумма = ROUND(SUM(CAST(поле AS DECIMAL(38,6))), 2); среднее = ROUND(AVG(CAST(поле AS DECIMAL(38,6))), 2). Округляй только итог, а не отдельные сделки. Никогда не приводи деньги к DOUBLE/FLOAT. Проценты и доли: ROUND(100.0 * a / b, 2).
 4. Если вопрос нельзя ответить по этим данным (период вне диапазона дат из схемы, нужного поля нет, вопрос не про сделки биржи), верни sql = null и коротко объясни в reason.
-5. Названия компаний, товаров, регионов ищи без учёта регистра через ILIKE '%...%'. Не подменяй запрошенное название похожим: если сущности нет в данных, запрос должен вернуть пустой результат, это нормально. Опечатки и разное написание: если в схеме есть список значений и подходящее значение однозначно, используй его; иначе ILIKE по основной части слова, и скажи об этом в filters_note.
-6. Если вопрос не называет статус сделки, учитывай все статусы и укажи это в filters_note. Если называет («исполненные», «аннулированные»), фильтруй по соответствующему значению статуса из схемы.
-7. Если валюта не уточнена, считай суммы в национальной валюте (сум). Если вопрос про доллары, используй поле в долларах (если есть) или курс из таблицы курсов. Всегда указывай в fields_used, какое поле суммы использовано и в какой валюте.
+5. Названия компаний ищи без учёта регистра через ILIKE '%...%' по seller_name или buyer_name (имена записаны латиницей и кириллицей; для точной группировки используй seller_inn или buyer_inn). Регионы ищи по правилу 17, товары по правилу 15. Не подменяй запрошенное название похожим: если сущности нет в данных, запрос должен вернуть пустой результат, это нормально. Опечатки и разное написание: если в схеме есть список значений и подходящее значение однозначно, используй его; иначе ILIKE по основной части слова, и скажи об этом в filters_note.
+6. СТАТУС. Аннулированные сделки (status = 'Аннулирован(Не оплачен)') не состоялись. Для вопросов про сумму, оборот, объём, цену и количество сделок исключай их (status <> 'Аннулирован(Не оплачен)') и пиши это в filters_note; добавь вторую колонку с тем же показателем по всем статусам (с суффиксом _all), чтобы разница была видна. Исключение: вопрос «сколько всего сделок/записей в данных» считай по всем строкам. Если статус назван: «исполненные» = 'Исполнен' (частично исполненные это отдельный статус 'Исполнен(Частично)'), «оплаченные» = 'Оплачен', «аннулированные» = 'Аннулирован(Не оплачен)'. Статус 'Новый' означает только сделки 30.10.2026.
+7. ДЕНЬГИ только из amount_uzs (сум) и amount_usd (доллар США). Поля deal_amount, start_price, unit_price, base_price указаны в валюте контракта (у экспортных сделок это доллары), поэтому суммировать и усреднять их НЕЛЬЗЯ. Без уточнения валюты используй amount_uzs. Цена за единицу = SUM(amount_uzs) / SUM(volume), отдельно по каждой unit; AVG(unit_price) запрещён. Всегда указывай в fields_used, какое поле суммы использовано и в какой валюте.
 8. Для «топ-N», «наибольший», «eng koʻp» используй ORDER BY ... DESC и LIMIT; для равных значений добавь второй ключ сортировки. Возвращай и название, и значение.
-9. В результат включай читаемые названия и коды (не только числовые ID): присоединяй справочники через JOIN. Колонкам давай понятные имена (total_uzs, deals_count).
-10. Периоды: «в 2024 году» = полный год; «за III квартал» = три месяца. Сверяй период с диапазоном дат в схеме. Если часть периода вне диапазона, посчитай только доступную часть и скажи об этом в filters_note.
+9. JOIN с другими таблицами запрещён. В deals уже есть названия товаров, продавцов, покупателей, брокеров, регионы, код ТН ВЭД (hs_code), курс и суммы. Имена бери из seller_name, buyer_name, seller_broker_name, buyer_broker_name. Колонкам результата давай понятные имена (total_uzs, deals_count).
+10. Периоды: «в 2024 году» = полный год; «за III квартал» = три месяца. Период сделки = deal_date, оплаты = payment_date, поставки = delivery_date. Сверяй период с диапазоном дат в схеме. Данные за 2026 год только до 30.10.2026, скажи об этом в filters_note, если вопрос затрагивает 2026 год. Если часть периода вне диапазона, посчитай только доступную часть и скажи об этом в filters_note.
 11. «оборот», «aylanma» = сумма сумм сделок (SUM) за период. Слово «сумма» без уточнения = сумма сделок в сумах; если неоднозначно, укажи это допущение в filters_note.
 12. ИСТОРИЯ ДИАЛОГА (если дана): если новый вопрос — уточнение («а за 2022?», «а по Ташкенту?», «2022-yilda-chi?»), возьми условия из предыдущего вопроса и измени только названное. Если вопрос самостоятельный, игнорируй историю.
 13. fields_used, filters_note и reason пиши на языке вопроса (русский или узбекский латиницей).
 14. ОБЪЁМ: поле volume (= quantity × lot), единица измерения в поле unit (килограмм, тонна, метр и т.д.). Объёмы с разными единицами НЕЛЬЗЯ складывать: при подсчёте объёма всегда делай GROUP BY unit и возвращай колонку unit; одна строка на единицу. Объём volume целое число: суммируй SUM(volume) без приведения к DECIMAL. Фактически поставленный объём = delivered_volume (дробное, суммируй как деньги: ROUND(SUM(CAST(delivered_volume AS DECIMAL(38,6))), 2)). Вопросы «сколько продано/куплено» без уточнения = volume (и добавь количество сделок и сумму в сумах).
-15. ПОИСК ПО НАЗВАНИЮ: ищи только слова из вопроса (в начальной форме: «хлопка» → «хлопок»). Не добавляй свои синонимы, переводы и транслитерации (например «пахта»), если их нет в данных. В данных один товар записан по-разному (регистр, дефис или пробел, суффиксы сорта и класса), поэтому ищи так: REPLACE(LOWER(product_name), '-', ' ') ILIKE '%слово или фраза%', где фразу из вопроса тоже приведи к нижнему регистру и замени дефис на пробел. Поиск по подстроке не захватывает однокоренные, но другие товары (масло хлопковое, шрот, пряжа не содержат «хлопок»). В filters_note кратко укажи, по какому слову искали.
-16. РЕЙТИНГИ И СУММЫ ПО ТОВАРАМ: один и тот же товар записан в данных по-разному (регистр, дефис или пробел, сорт и класс внутри названия), поэтому для топов, рейтингов и группировок по товару группируй по нормализованному названию:
-TRIM(regexp_replace(REPLACE(LOWER(product_name), '-', ' '), '[[:space:]]+([0-9]+|[ivx]+|первый|второй|третий|высший)[[:space:]]*(сорт|класс).*$', '')) AS product_norm
-Возвращай product_norm, нужную метрику и COUNT(DISTINCT product_name) AS name_variants; сортируй и группируй по product_norm. В filters_note напиши, что названия товаров объединены (регистр, дефис, сорт и класс). Эту формулу копируй дословно, не меняя регулярное выражение, и не используй обратные косые черты.
+@@PRODUCT_RULES@@17. РЕГИОНЫ: «регион» без уточнения роли = регион склада продавца, колонка region_ru; фильтруй точным равенством, без ILIKE. «Ташкент» без уточнения = 'г. Ташкент' (скажи об этом в filters_note); область = 'Ташкентская область'. Для региона покупателя используй buyer_region и значение точно из списка схемы. Соответствие: Toshkent shahri = г. Ташкент, Toshkent viloyati = Ташкентская область, Namangan = Наманганская область, Buxoro = Бухарская область, Samarqand = Самаркандская область, Sirdaryo = Сырдарьинская область, Qashqadaryo = Кашкадарьинская область, Xorazm = Хорезмская область, Andijon = Андижанская область, Farg‘ona = Ферганская область, Surxondaryo = Сурхандарьинская область, Navoiy = Навоийская область, Qoraqalpog‘iston = Республика Каракалпакстан, Jizzax = Джизакская область.
 Словарь UZ: bitim = сделка, summa = сумма, miqdor = количество, mahsulot/tovar = товар, viloyat = регион, sotuvchi = продавец, xaridor = покупатель, shartnoma = контракт, kurs = курс, yil = год, oy = месяц, eng koʻp = наибольший, nechta/qancha = сколько, aylanma = оборот, jami = всего.
+Названия товаров на узбекском (других переводов не придумывай): paxta = хлопок, paxta yogʻi = масло хлопковое, paxta ipi = пряжа хлопчатобумажная, bugʻdoy = пшеница, un = мука, shakar = сахар, sement = цемент, benzin = бензин, dizel = дизельное топливо, mazut = мазут, gaz = газ, guruch = рис, kungaboqar yogʻi = масло подсолнечное, karbamid/mochevina = карбамид, selitra = аммиачная селитра, gʻisht = кирпич, shisha = стекло, armatura = арматура, bitum = битум, polietilen = полиэтилен, tuz = соль, ohak = известь, kabel = кабель, suv = вода.
 Ответь строго JSON-объектом без markdown:
 {"lang": "ru" или "uz", "full_question": "самостоятельная формулировка вопроса с учётом истории", "sql": "запрос или null", "fields_used": "таблицы.поля и валюта", "filters_note": "какие фильтры и допущения применены", "reason": "если sql=null, то почему"}"""
 
@@ -148,11 +173,15 @@ ANSWER_SYS = """Ты формулируешь ответ на вопрос ст�
 
 FORBIDDEN = re.compile(
     r"\b(insert|update|delete|drop|create|alter|attach|detach|copy|pragma|install|load|export|import|call|set|"
-    r"read_csv\w*|read_parquet|read_json\w*|read_text|read_blob|glob)\b",
+    r"read_csv\w*|read_parquet|read_json\w*|read_ndjson\w*|read_text|read_blob|parquet_\w+|sniff_csv|"
+    r"duckdb_\w+|getenv|current_setting|glob)\b",
     re.I,
 )
+OTHER_TABLES = re.compile(r"\b(contracts|participants|brokers|usd_rates)\b", re.I)
 
-ID_LIKE = re.compile(r"(^|_)(id|code|kod|year|yil|god|month|oy|quarter|inn|stir|tin)($|_)|id$", re.I)
+ID_LIKE = re.compile(
+    r"(^|_)(id|code|kod|year|yil|god|month|oy|quarter|inn|stir|tin|y|год|месяц|квартал)($|_)|id$", re.I
+)
 GREEDY_NUM = re.compile(r"\d[\d \u00a0]*(?:[.,]\d+)?")
 
 
@@ -297,6 +326,61 @@ def T_det(lang):
 
 
 # ---------------- Данные ----------------
+DB_STATUS = {"product_norm": "не запускалось", "lock": "не запускалось"}
+
+
+def build_product_norm(con):
+    """Добавляет в deals колонку product_norm: один товар = одно название (по коду ТН ВЭД).
+    Хлопок (спот, форвард, фьючерс) объединён; код 271019 разделён на дизельное топливо и мазут.
+    Если что-то пошло не так, deals остаётся как был."""
+    try:
+        cols = {r[0] for r in con.execute("DESCRIBE deals").fetchall()}
+        if "product_norm" in cols:
+            DB_STATUS["product_norm"] = "уже есть в данных"
+            return
+        if "product_name" not in cols or "hs_code" not in cols:
+            DB_STATUS["product_norm"] = "нет колонок product_name или hs_code: " + ", ".join(sorted(cols))[:200]
+            return
+        nm = (
+            "TRIM(regexp_replace(REPLACE(LOWER(product_name), '-', ' '), "
+            "'[[:space:]]+([0-9]+|[ivx]+|первый|второй|третий|высший|высшего)[[:space:]]*(сорт|сорта|класс).*$', ''))"
+        )
+        con.execute(
+            f"""
+            CREATE TABLE deals_new AS
+            WITH b AS (SELECT *, {nm} AS nm FROM deals),
+            c AS (
+                SELECT hs_code, arg_max(nm, cnt) AS canon FROM (
+                    SELECT hs_code, nm, COUNT(*) AS cnt FROM b GROUP BY 1, 2
+                ) GROUP BY hs_code
+            )
+            SELECT b.* EXCLUDE (nm),
+                   CASE WHEN CAST(b.hs_code AS VARCHAR) = '520100' THEN 'хлопок сырец'
+                        WHEN CAST(b.hs_code AS VARCHAR) = '271019' AND b.nm LIKE '%мазут%' THEN 'мазут'
+                        WHEN CAST(b.hs_code AS VARCHAR) = '271019' THEN 'дизельное топливо'
+                        ELSE COALESCE(c.canon, b.nm) END AS product_norm
+            FROM b LEFT JOIN c ON b.hs_code IS NOT DISTINCT FROM c.hs_code
+            """
+        )
+        con.execute("DROP TABLE deals")
+        con.execute("ALTER TABLE deals_new RENAME TO deals")
+        k = con.execute("SELECT COUNT(DISTINCT product_norm) FROM deals").fetchone()[0]
+        DB_STATUS["product_norm"] = f"OK, значений: {k}"
+    except Exception as e:
+        DB_STATUS["product_norm"] = "ОШИБКА: " + str(e)[:300]
+        try:
+            con.execute("DROP TABLE IF EXISTS deals_new")
+        except Exception:
+            pass
+
+
+def has_product_norm(con):
+    try:
+        return "product_norm" in {r[0] for r in con.execute("DESCRIBE deals").fetchall()}
+    except Exception:
+        return False
+
+
 @st.cache_resource(show_spinner="Загрузка данных...")
 def init_db():
     con = duckdb.connect(":memory:")
@@ -325,6 +409,14 @@ def init_db():
             f"CREATE TABLE {name} AS SELECT * FROM read_csv_auto('{p.as_posix()}', sample_size=-1)"
         )
         existing.add(name)
+    build_product_norm(con)
+    # После загрузки закрываем доступ к файлам: SQL от модели не сможет читать их с диска.
+    try:
+        con.execute("SET enable_external_access = false")
+        con.execute("SET lock_configuration = true")
+        DB_STATUS["lock"] = "OK"
+    except Exception as e:
+        DB_STATUS["lock"] = "ОШИБКА: " + str(e)[:200]
     return con
 
 
@@ -333,6 +425,8 @@ def describe_schema(con):
     num_prefix = ("BIGINT", "INTEGER", "DOUBLE", "HUGEINT", "DECIMAL", "FLOAT",
                   "SMALLINT", "TINYINT", "UBIGINT", "UINTEGER")
     for (tb,) in con.execute("SHOW TABLES").fetchall():
+        if tb != "deals":
+            continue
         n = con.execute(f'SELECT COUNT(*) FROM "{tb}"').fetchone()[0]
         lines = [f"Таблица {tb} ({n} строк). Колонки:"]
         for c in con.execute(f'DESCRIBE "{tb}"').fetchall():
@@ -342,11 +436,11 @@ def describe_schema(con):
             try:
                 if typ == "VARCHAR":
                     nd = con.execute(f'SELECT COUNT(DISTINCT {q}) FROM "{tb}"').fetchone()[0]
-                    if nd <= 40:
+                    if nd <= 60:
                         vals = [r[0] for r in con.execute(
                             f'SELECT DISTINCT {q} FROM "{tb}" WHERE {q} IS NOT NULL ORDER BY 1'
                         ).fetchall()]
-                        extra = f" | значения: {vals}"[:800]
+                        extra = f" | значения: {vals}"[:2000]
                     else:
                         extra = f" | {nd} уникальных значений"
                 elif typ.startswith(("DATE", "TIMESTAMP")) or typ.startswith(num_prefix):
@@ -356,7 +450,7 @@ def describe_schema(con):
                 pass
             lines.append(f"  - {name} ({typ}){extra}")
         try:
-            sample = con.execute(f'SELECT * FROM "{tb}" LIMIT 3').fetchdf()
+            sample = con.execute(f'SELECT * FROM "{tb}" LIMIT 2').fetchdf()
             lines.append("Пример строк:\n" + sample.to_string(max_colwidth=40))
         except Exception:
             pass
@@ -376,7 +470,7 @@ def read_readme():
 @st.cache_resource
 def get_context():
     con = init_db()
-    return describe_schema(con), read_readme()
+    return describe_schema(con), DEALS_NOTES + read_readme()
 
 
 @st.cache_resource
@@ -452,19 +546,30 @@ def check_sql(sql):
     bare = re.sub(r"'[^']*'", "''", s)
     if ";" in bare:
         raise ValueError("Допустим только один запрос")
+    if "--" in bare or "/*" in bare:
+        raise ValueError("Комментарии запрещены")
     if not re.match(r"^(with|select)\b", bare, re.I):
         raise ValueError("Допустим только SELECT")
     if FORBIDDEN.search(bare):
         raise ValueError("Запрещённая конструкция в запросе")
+    if re.search(r"\b(from|join)\s*''", bare, re.I):
+        raise ValueError("Чтение файлов запрещено")
+    if OTHER_TABLES.search(bare):
+        raise ValueError("Другие таблицы недоступны: используйте только deals")
     return s
 
 
-def run_sql(con, sql):
+def run_sql(con, sql, timeout=25):
     s = sql.strip().rstrip(";")
     cur = con.cursor()
-    res = cur.execute(f"SELECT * FROM ({s}) AS q LIMIT 1000")
-    cols = [d[0] for d in res.description]
-    rows = res.fetchall()
+    timer = threading.Timer(timeout, lambda: cur.interrupt())
+    timer.start()
+    try:
+        res = cur.execute(f"SELECT * FROM ({s}) AS q LIMIT 1000")
+        cols = [d[0] for d in res.description]
+        rows = res.fetchall()
+    finally:
+        timer.cancel()
     return pd.DataFrame(rows, columns=cols, dtype=object)
 
 
@@ -494,7 +599,12 @@ def answer_question(question, history_text):
     con = init_db()
     schema, readme = get_context()
     meta = get_meta()
-    sql_sys = SQL_RULES + "\n\nОПИСАНИЕ ПОЛЕЙ (README):\n" + readme + "\n\nСХЕМА ДАННЫХ:\n" + schema
+    product_rules = PRODUCT_RULES_NEW if has_product_norm(con) else PRODUCT_RULES_OLD
+    sql_sys = (
+        SQL_RULES.replace("@@PRODUCT_RULES@@", product_rules)
+        + "\n\nОПИСАНИЕ ПОЛЕЙ (README):\n" + readme
+        + "\n\nСХЕМА ДАННЫХ:\n" + schema
+    )
 
     user_prompt = f"Вопрос: {question}"
     if history_text:
@@ -793,6 +903,8 @@ with st.sidebar:
     for (tb,) in tables:
         n = con.execute(f'SELECT COUNT(*) FROM "{tb}"').fetchone()[0]
         st.write(f"**{tb}**: {fmt_value(n)}")
+    # Временная диагностика: перед сдачей этот блок можно удалить.
+    st.caption(f"product_norm: {DB_STATUS['product_norm']}  \nзащита файлов: {DB_STATUS['lock']}")
 
 st.markdown(f'<h1 class="hero">📊 <span class="ttl">{t("title")}</span></h1>', unsafe_allow_html=True)
 st.caption(t("subtitle"))
