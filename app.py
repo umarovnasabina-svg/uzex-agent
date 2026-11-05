@@ -689,9 +689,9 @@ st.markdown(
 /* Фон: тёплое свечение поверх цвета выбранной темы */
 .stApp{
   background-image:
-    radial-gradient(900px 520px at 6% -6%, rgba(255,122,24,.30), transparent 62%),
-    radial-gradient(760px 520px at 100% 18%, rgba(200,95,20,.22), transparent 62%),
-    radial-gradient(900px 560px at 45% 112%, rgba(120,58,14,.28), transparent 62%);
+    radial-gradient(1000px 620px at 0% -8%, rgba(255,122,24,.42), transparent 62%),
+    radial-gradient(800px 560px at 100% 25%, rgba(214,92,12,.30), transparent 62%),
+    radial-gradient(1000px 640px at 40% 115%, rgba(150,60,8,.38), transparent 62%);
   background-attachment: fixed;
 }
 header[data-testid="stHeader"]{background:transparent;}
@@ -702,12 +702,13 @@ footer{visibility:hidden;}
 .block-container{max-width:1100px;padding-top:2rem;}
 
 /* Заголовок */
-h1{
+.ttl{
   background:linear-gradient(90deg,#ff7a18,#ffb066);
   -webkit-background-clip:text;background-clip:text;
   -webkit-text-fill-color:transparent;color:transparent;
   font-weight:800;letter-spacing:-0.5px;
 }
+.hero{font-size:2.6rem;line-height:1.2;margin:0 0 .4rem 0;padding:0;}
 
 /* Боковая панель */
 section[data-testid="stSidebar"]{
@@ -721,33 +722,52 @@ div[data-testid="stMetric"],
 div[data-testid="stChatMessage"],
 div[data-testid="stExpander"],
 div[data-testid="stAlert"]{
-  background:rgba(255,140,40,.07) !important;
-  border:1px solid rgba(255,140,40,.24) !important;
-  border-radius:16px !important;
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  background:linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,140,40,.07)) !important;
+  border:1px solid rgba(255,170,90,.32) !important;
+  border-radius:18px !important;
+  box-shadow:0 8px 32px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.22);
+  backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%);
 }
 div[data-testid="stMetric"]{padding:14px 18px;}
+div[data-testid="stMetricValue"]{font-size:1.8rem;}
+div[data-testid="stMetricValue"] > div{white-space:normal;overflow:visible;text-overflow:clip;}
 div[data-testid="stChatMessage"]{padding:14px 18px;margin-bottom:10px;}
 div[data-testid="stExpander"] details{border:none;}
 
 /* Кнопки (примеры, CSV, оценки) */
 .stButton > button, .stDownloadButton > button{
-  background:rgba(255,140,40,.08);
-  border:1px solid rgba(255,140,40,.32);
-  border-radius:12px;
-  transition:background .15s, border-color .15s;
+  background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,140,40,.08));
+  border:1px solid rgba(255,170,90,.34);
+  border-radius:14px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.18);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  transition:background .15s, border-color .15s, transform .15s;
 }
 .stButton > button:hover, .stDownloadButton > button:hover{
-  background:rgba(255,122,24,.20);
+  background:rgba(255,122,24,.24);
   border-color:#ff7a18;
 }
 
-/* Поле ввода */
+/* Поле ввода (поиск) */
 div[data-testid="stChatInput"]{
-  border:1px solid rgba(255,122,24,.40);
-  border-radius:18px;
-  background:rgba(255,140,40,.07);
+  background:linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,140,40,.08)) !important;
+  border:1px solid rgba(255,150,70,.55) !important;
+  border-radius:28px !important;
+  box-shadow:0 8px 28px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.2);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  padding:2px 6px;
 }
+div[data-testid="stChatInput"]:focus-within{
+  border-color:#ff7a18 !important;
+  box-shadow:0 0 0 3px rgba(255,122,24,.28), 0 8px 28px rgba(0,0,0,.25);
+}
+div[data-testid="stChatInput"] > div,
+div[data-testid="stChatInput"] textarea{background:transparent !important;border:none !important;}
+div[data-testid="stChatInput"] button{
+  background:#ff7a18 !important;color:#fff !important;border-radius:50% !important;
+}
+div[data-testid="stChatInput"] button:hover{background:#ff9640 !important;}
+div[data-testid="stAlert"], div[data-testid="stAlert"] *{color:inherit !important;}
 div[data-testid="stBottom"] > div{background:transparent;}
 div[data-testid="stBottomBlockContainer"]{background:transparent;}
 </style>""",
@@ -774,12 +794,12 @@ with st.sidebar:
         n = con.execute(f'SELECT COUNT(*) FROM "{tb}"').fetchone()[0]
         st.write(f"**{tb}**: {fmt_value(n)}")
 
-st.title("📊 " + t("title"))
+st.markdown(f'<h1 class="hero">📊 <span class="ttl">{t("title")}</span></h1>', unsafe_allow_html=True)
 st.caption(t("subtitle"))
 
 meta = get_meta()
 if meta.get("n"):
-    m1, m2, m3 = st.columns([1, 2, 1])
+    m1, m2, m3 = st.columns([1, 3, 1])
     m1.metric(t("m_deals"), fmt_value(meta["n"]))
     m2.metric(t("m_period"), f"{meta['mn']} – {meta['mx']}")
     m3.metric(t("m_tables"), str(len(tables)))
