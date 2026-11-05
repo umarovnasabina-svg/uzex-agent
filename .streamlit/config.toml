@@ -1,5 +1,9 @@
 [client]
 toolbarMode = "minimal"
-
+ 
+[theme]
+primaryColor = "#ff7a18"
+ 
 [server]
 enableXsrfProtection = true
+ 
